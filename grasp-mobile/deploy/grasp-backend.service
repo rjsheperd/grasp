@@ -1,0 +1,30 @@
+# VPS systemd unit for grasp-backend.
+# Install to: ~/.config/systemd/user/grasp-backend.service
+# Then: systemctl --user daemon-reload && systemctl --user enable --now grasp-backend.service
+#
+# Set GRASP_API_KEY to a secret generated with: openssl rand -base64 32
+# The laptop service leaves GRASP_API_KEY unset (auth disabled for local use).
+
+[Unit]
+Description=Grasp capture backend (VPS)
+After=network.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5s
+
+Environment=GRASP_API_KEY=REPLACE_WITH_YOUR_KEY
+
+ExecStart=%h/.local/share/uv/tools/grasp-backend/bin/python \
+    -m grasp_backend serve \
+    --port 12212 \
+    --path %h/org/grasp.org \
+    --config %h/.config/grasp/config.py \
+    --template "* %%U [[%%:link][%%:description]] %%:tags\n%%:initial\n"
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

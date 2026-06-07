@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import logging
 import os
@@ -170,6 +171,13 @@ def capture(
 
 
 class GraspRequestHandler(BaseHTTPRequestHandler):
+    def _check_auth(self) -> bool:
+        key = os.environ.get('GRASP_API_KEY')
+        if not key:  # auth disabled when GRASP_API_KEY is unset (local use)
+            return True
+        auth = self.headers.get('Authorization', '')
+        return hmac.compare_digest(auth, f'Bearer {key}')
+
     def handle_POST(self):
         logger = get_logger()
         content_length = int(self.headers['Content-Length'])
@@ -190,6 +198,13 @@ class GraspRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         logger = get_logger()
+        if not self._check_auth():
+            self.send_response(401)
+            self.send_header('Content-Type', 'text/plain')
+            self.send_header('WWW-Authenticate', 'Bearer realm="grasp"')
+            self.end_headers()
+            self.wfile.write(b'Unauthorized')
+            return
         try:
             self.handle_POST()
         except Exception as e:

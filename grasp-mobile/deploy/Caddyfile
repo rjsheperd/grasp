@@ -1,0 +1,29 @@
+# Replace grasp.yourdomain.com with your actual domain.
+# Caddy provisions a TLS cert from Let's Encrypt automatically.
+
+grasp.yourdomain.com {
+    root * /srv/grasp-mobile
+
+    # Proxy capture requests to the local grasp-backend
+    handle /capture {
+        reverse_proxy localhost:12212
+    }
+
+    # Serve the PWA for all other paths (including /share from share target)
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Tighten headers
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        -Server
+    }
+
+    log {
+        output file /var/log/caddy/grasp.log
+    }
+}
