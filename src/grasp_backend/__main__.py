@@ -50,9 +50,30 @@ def _is_pdf_url(url: str) -> bool:
 
 
 def _fetch_pdf(url: str) -> str | None:
+    import urllib.parse
+    import urllib.request as urlreq
     from markitdown import MarkItDown
-    result = MarkItDown().convert_url(url)
-    return result.text_content or None
+
+    papers_dir = Path('~/org/papers').expanduser()
+    papers_dir.mkdir(parents=True, exist_ok=True)
+
+    # Derive a filename from the URL path, falling back to 'document.pdf'
+    url_path = urllib.parse.urlparse(url).path
+    filename = Path(url_path).name or 'document.pdf'
+    if not filename.lower().endswith('.pdf'):
+        filename += '.pdf'
+    dest = papers_dir / filename
+
+    # Avoid re-downloading if already present
+    if not dest.exists():
+        req = urlreq.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urlreq.urlopen(req, timeout=30) as r, dest.open('wb') as f:
+            f.write(r.read())
+
+    result = MarkItDown().convert_local(str(dest))
+    content = result.text_content or ''
+    # Sentinel lets config.py render the local link outside the quote block
+    return f'__LOCAL__:{dest}\n\n{content}'
 
 
 def _fetch_web(url: str) -> str | None:
