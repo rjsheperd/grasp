@@ -1,0 +1,264 @@
+#+TITLE: grasp-mobile
+#+STARTUP: overview
+
+A PWA share target for [[https://github.com/rjsheperd/grasp][grasp-backend]]. Tap Share on any page from iOS or
+Android and the URL lands in =~/org/grasp.org= — synced back to your laptop
+via rclone bisync through S3.
+
+* How it works
+
+#+BEGIN_SRC
+  Phone (iOS 16.4+ / Android)
+    Share Sheet → Grasp PWA (installed from VPS)
+    GET /share?url=...&title=...
+          │
+          ▼
+  ┌─────────────────────────────────────────┐
+  │  VPS                                     │
+  │                                          │
+  │  Caddy (:443, TLS via Let's Encrypt)     │
+  │    /          → static PWA files         │
+  │    /capture   → grasp-backend (:12212)   │
+  │                  checks GRASP_API_KEY    │
+  │                  appends to grasp.org    │
+  │                                          │
+  │  org-sync.timer (every 15 min)           │
+  │    ~/org/grasp.org ↔ S3 bucket           │
+  └─────────────────────────────────────────┘
+          ↕ S3 (rclone bisync)
+  ┌─────────────────────────────────────────┐
+  │  Laptop                                  │
+  │  ~/org/grasp.org ← pulled every 15 min  │
+  └─────────────────────────────────────────┘
+#+END_SRC
+
+A share from the phone appears on the laptop within 15 minutes (next bisync
+tick on either side). The grasp-backend and org-sync setup on the VPS mirrors
+the laptop setup exactly — same fork, same config format, same S3 bucket.
+
+* Platform support
+
+| Platform | Requirement          | Notes                                       |
+|----------+----------------------+---------------------------------------------|
+| Android  | Chrome (any)         | Full Web Share Target API support           |
+| iOS      | Safari, iOS 16.4+    | GET-method share target; add to Home Screen |
+| iOS <16.4 | —                   | Use the iOS Shortcut fallback (see below)   |
+
+The manifest uses a *GET-based* share target rather than POST. iOS Safari
+handles GET reliably; POST share targets are flaky on iOS. The PWA JS reads
+=?url=&title== from the query string and submits a POST to =/capture= itself.
+
+* Files
+
+#+BEGIN_SRC
+grasp-mobile/
+├── index.html          Main capture form + settings screen
+├── app.js              Share param parsing, fetch to /capture, localStorage config
+├── manifest.json       PWA manifest with share_target
+├── sw.js               Service worker (required for installability)
+├── generate-icons.sh   Generate icon-192.png / icon-512.png from SVG
+├── icon-192.png        (generated — not committed)
+├── icon-512.png        (generated — not committed)
+└── deploy/
+    ├── Caddyfile           HTTPS + static files + /capture reverse proxy
+    ├── grasp-backend.service  VPS systemd unit
+    └── install.sh          One-shot VPS provisioning script
+#+END_SRC
+
+* Prerequisites
+
+** On the VPS
+
+- Debian/Ubuntu (the install script targets apt)
+- A domain name with an A record pointing to the VPS IP
+- Ports 80 and 443 open (Caddy uses 80 for the ACME challenge)
+
+** On your laptop
+
+- rclone configured and =org-sync.timer= running (see =~/.config/org-sync/config=)
+- The grasp fork installed: =uv tool install --editable ~/Code/rjsheperd/grasp=
+
+* VPS deployment
+
+** 1. Generate an API key
+
+#+BEGIN_SRC shell
+openssl rand -base64 32
+#+END_SRC
+
+Keep this — you'll need it for the PWA settings screen too.
+
+** 2. Run the install script
+
+#+BEGIN_SRC shell
+# On the VPS, clone the fork and run the script
+git clone https://github.com/rjsheperd/grasp.git ~/Code/rjsheperd/grasp
+bash ~/Code/rjsheperd/grasp/grasp-mobile/deploy/install.sh \
+    --domain grasp.yourdomain.com \
+    --api-key "YOUR_KEY_HERE"
+#+END_SRC
+
+The script:
+1. Installs =caddy=, =uv=, =rclone= via apt
+2. Clones the grasp fork (if not present) and installs =grasp_backend= via uv
+3. Writes =~/.config/grasp/config.py= (org formatting)
+4. Installs and starts =grasp-backend.service= with =GRASP_API_KEY= set
+5. Copies PWA static files to =/srv/grasp-mobile/=
+6. Installs and reloads =Caddyfile= with your domain substituted
+
+** 3. Generate the PWA icons
+
+The icons are required for Android/iOS home screen installation.
+
+#+BEGIN_SRC shell
+# On the VPS
+sudo apt install librsvg2-bin
+cd ~/Code/rjsheperd/grasp/grasp-mobile
+bash generate-icons.sh
+sudo cp icon-*.png /srv/grasp-mobile/
+#+END_SRC
+
+** 4. Configure rclone on the VPS
+
+The VPS needs to sync =~/org/grasp.org= to the same S3 bucket as the laptop
+so captures flow back. Follow the same steps as the laptop setup:
+
+#+BEGIN_SRC shell
+rclone config    # create the same remote (e.g. 'r2')
+cp ~/.config/org-sync/config.example ~/.config/org-sync/config
+# edit: set RCLONE_REMOTE and ORG_BUCKET to match the laptop
+systemctl --user enable --now org-sync.timer
+#+END_SRC
+
+** 5. Verify
+
+#+BEGIN_SRC shell
+# Backend running?
+systemctl --user status grasp-backend
+
+# Caddy serving?
+curl -I https://grasp.yourdomain.com
+
+# Test a capture (replace KEY and DOMAIN)
+curl -s -X POST https://grasp.yourdomain.com/capture \
+     -H "Authorization: Bearer YOUR_KEY_HERE" \
+     -H "Content-Type: application/json" \
+     -d '{"url":"https://example.com","title":"Test","selection":"","comment":"","tag_str":"test"}' \
+  | python3 -m json.tool
+
+# Check the entry appeared
+tail -5 ~/org/grasp.org
+#+END_SRC
+
+* Mobile setup
+
+** iOS (Safari, 16.4+)
+
+1. Open =https://grasp.yourdomain.com= in Safari
+2. Tap the Share button → *Add to Home Screen* → Add
+3. Return to any webpage → Share → scroll down → *Grasp*
+4. On first open: enter your server URL and API key → Save
+
+** Android (Chrome)
+
+1. Open =https://grasp.yourdomain.com= in Chrome
+2. Tap ⋮ → *Add to Home Screen* → Add
+3. On first open: enter your server URL and API key → Save
+4. On any page: Share → *Grasp*
+
+** First-run settings
+
+The app stores configuration in =localStorage= — nothing is hardcoded. On first
+open (or when the ⚙ icon is tapped) a settings screen appears:
+
+| Field      | Value                              |
+|------------+------------------------------------|
+| Server URL | =https://grasp.yourdomain.com=     |
+| API Key    | the key from =openssl rand -base64 32= |
+
+After saving, the capture form appears. The settings screen only reappears if
+you tap ⚙ or if the API key is cleared.
+
+* iOS Shortcut fallback (iOS < 16.4)
+
+For devices that don't support the Web Share Target API, create a Shortcut:
+
+1. Open *Shortcuts* → + → Add Action → *Get URLs from Input*
+2. Add Action → *Get Web Page Contents* from input
+3. Add Action → *Get Name of Safari Tab* (for the title)
+4. Add Action → *Get Contents of URL*:
+   - URL: =https://grasp.yourdomain.com/capture=
+   - Method: POST
+   - Headers: =Content-Type: application/json=, =Authorization: Bearer YOUR_KEY=
+   - Body (JSON):
+     #+BEGIN_SRC json
+     {
+       "url":       "Shortcut Input",
+       "title":     "Name of Safari Tab",
+       "selection": "",
+       "comment":   "",
+       "tag_str":   ""
+     }
+     #+END_SRC
+5. Add Action → *Show Result* (to confirm success)
+6. Tap ⋮ → *Add to Share Sheet*
+
+* Entry format
+
+Captures append to =~/org/grasp.org= in this format:
+
+#+BEGIN_SRC org
+,* [2026-06-06 Sat 17:41] [[https://example.com/article][Article Title]]
+,#+begin_quote
+Full article body extracted by trafilatura (if no selection was made).
+,#+end_quote
+#+END_SRC
+
+For PDF URLs the PDF is downloaded to =~/org/papers/= and a file link is
+included:
+
+#+BEGIN_SRC org
+,* [2026-06-06 Sat 17:41] [[https://arxiv.org/pdf/2401.00001][Paper Title]]
+[[file:~/org/papers/2401.00001.pdf][2401.00001.pdf]]
+
+,#+begin_quote
+Extracted paper text via markitdown...
+,#+end_quote
+#+END_SRC
+
+* API key rotation
+
+To rotate the key:
+
+1. Generate a new key: =openssl rand -base64 32=
+2. On the VPS: edit =~/.config/systemd/user/grasp-backend.service=, update
+   =GRASP_API_KEY=, then =systemctl --user restart grasp-backend=
+3. On each phone: tap ⚙ in the Grasp PWA → enter the new key → Save
+4. Update the iOS Shortcut if you use one
+
+* Maintenance
+
+#+BEGIN_SRC shell
+# Check backend logs on VPS
+journalctl --user -u grasp-backend -f
+
+# Check sync logs on VPS
+journalctl --user -u org-sync -f
+
+# Restart backend after updating the grasp fork
+cd ~/Code/rjsheperd/grasp
+git pull fork master
+uv tool install --editable . --reinstall
+systemctl --user restart grasp-backend
+
+# Redeploy PWA static files after frontend changes
+sudo cp ~/Code/rjsheperd/grasp/grasp-mobile/*.{html,js,json,png} /srv/grasp-mobile/
+#+END_SRC
+
+* Relationship to the desktop Grasp extension
+
+The desktop Chrome extension talks to =localhost:12212= with no auth (the laptop
+service leaves =GRASP_API_KEY= unset). The VPS service sets =GRASP_API_KEY= so
+only the PWA (which sends the =Authorization= header) can write to it. The two
+instances write to the same =grasp.org= path in S3 — entries from phone and
+desktop interleave in the file, ordered by timestamp.
