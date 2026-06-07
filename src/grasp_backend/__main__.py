@@ -37,6 +37,19 @@ def append_org(path: Path, org: str) -> None:
 from functools import lru_cache
 
 
+def fetch_article(url: str) -> str | None:
+    logger = get_logger()
+    try:
+        import trafilatura
+        html = trafilatura.fetch_url(url)
+        if html is None:
+            return None
+        return trafilatura.extract(html, include_comments=False, include_tables=False, favor_recall=True)
+    except Exception as e:
+        logger.warning('Article fetch failed for %s: %s', url, e)
+        return None
+
+
 @lru_cache(1)
 def capture_config() -> Config | None:
     cvar = os.environ.get(CAPTURE_CONFIG_VAR)
@@ -75,6 +88,12 @@ def capture(
     selection = safe(selection)
     comment = safe(comment)
     tag_str = safe(tag_str)
+
+    # If no text was selected in the browser, fetch the full article server-side
+    if empty(selection):
+        article = fetch_article(url)
+        if article:
+            selection = article
 
     tags: list[str] = []
     if not empty(tag_str):
