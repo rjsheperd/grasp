@@ -3,6 +3,7 @@
 dynamic = ["version"]  # version is managed by build backend
 name = "grasp_backend"
 dependencies = [
+    "markitdown[pdf]",
     "trafilatura",
 ]
 requires-python = ">=3.12"

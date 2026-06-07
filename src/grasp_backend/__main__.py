@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
@@ -37,14 +38,38 @@ def append_org(path: Path, org: str) -> None:
 from functools import lru_cache
 
 
+def _is_pdf_url(url: str) -> bool:
+    if url.lower().split('?')[0].endswith('.pdf'):
+        return True
+    try:
+        req = urllib.request.Request(url, method='HEAD', headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return 'application/pdf' in r.headers.get('Content-Type', '')
+    except Exception:
+        return False
+
+
+def _fetch_pdf(url: str) -> str | None:
+    from markitdown import MarkItDown
+    result = MarkItDown().convert_url(url)
+    return result.text_content or None
+
+
+def _fetch_web(url: str) -> str | None:
+    import trafilatura
+    html = trafilatura.fetch_url(url)
+    if html is None:
+        return None
+    return trafilatura.extract(html, include_comments=False, include_tables=False, favor_recall=True)
+
+
 def fetch_article(url: str) -> str | None:
     logger = get_logger()
     try:
-        import trafilatura
-        html = trafilatura.fetch_url(url)
-        if html is None:
-            return None
-        return trafilatura.extract(html, include_comments=False, include_tables=False, favor_recall=True)
+        if _is_pdf_url(url):
+            logger.info('PDF detected, using markitdown for %s', url)
+            return _fetch_pdf(url)
+        return _fetch_web(url)
     except Exception as e:
         logger.warning('Article fetch failed for %s: %s', url, e)
         return None
